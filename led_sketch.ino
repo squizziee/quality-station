@@ -67,14 +67,30 @@ class Color {
     }
 };
 
+// class for measurement quality storage
 class Quality {
   public:
     Color qualityColor;
     int qualityArr[6];
 
     int getOverallQuality() {
-      return qualityArr[0] + qualityArr[1] + qualityArr[2] +
-             qualityArr[3] + qualityArr[4] + qualityArr[5];
+      int total = 0;
+      for (int i = 0; i < 6; i++) {
+        if (qualityArr[i] != -1 && qualityArr[i] != 1) {
+          ++total;
+        }
+      }
+      return total;
+    }
+
+    int getCountOfAllMeasurementsWithValidSensors() {
+      int total = 0;
+      for (int i = 0; i < 6; i++) {
+        if (qualityArr[i] != -1) {
+          ++total;
+        }
+      }
+      return total;
     }
 
     String getLackingMeasurements() {
@@ -118,26 +134,23 @@ class Quality {
 
 void setup() {
   Serial.begin(9600);
-
-  bool status;
-  status = bme1.begin();   
+  bool status= bme1.begin();   
   bool status2 = bme2.begin();
-  if (!status) {
+  if (!status && !status2) {
     Serial.println("Could not find a valid BME280 sensor, check wiring!");
-    while (1);
   }
   
-  Serial.println("Started monitoring...");
   delayTime = 1000;
   displayDelayTime = 2000;
 
-  Serial.println();
-
   pinMode(VUMETER_PIN, INPUT);
+  pinMode(LDR_PIN, INPUT);
+  pinMode(MQ135_PIN, INPUT);
 
   lcd.begin(40, 2);
-
   lcd.setCursor(0, 0);
+
+  Serial.println("Started monitoring...");
 }
 
 void loop() {
@@ -164,13 +177,6 @@ void loop() {
 
   setColor(quality.qualityColor);
 
-  // Serial.print("Quality color: ");
-  // Serial.print(quality.red);
-  // Serial.print(",");
-  // Serial.print(quality.green);
-  // Serial.print(",");
-  // Serial.println(quality.blue);
-
   gasToLCD(calibrated.gas);
   lcd.setCursor(0, 1);
   luminosityToLCD(calibrated.luminosity);
@@ -193,8 +199,9 @@ void loop() {
   lcd.clear();
 
   lcd.print("Overall quality: ");
-  lcd.print(6 - quality.getOverallQuality());
-  lcd.print("/6");
+  lcd.print(quality.getOverallQuality());
+  lcd.print("/");
+  lcd.print(quality.getCountOfAllMeasurementsWithValidSensors());
   lcd.setCursor(0, 1);
   lcd.print("Bad: ");
   lcd.print(quality.getLackingMeasurements());
@@ -414,7 +421,8 @@ void setColor(Color color) {
   analogWrite(greenPin, color.green);
 };
 
-// calculation of quality quotient according to given calibrated measurements
+// calculation of quality quotient according to given calibrated measurements.
+// 1 is for abnormal measurement, 0 is for normal, -1 is for incorrect.
 Quality calculateQuality(
   int gas, 
   float luminosity, 
@@ -422,66 +430,52 @@ Quality calculateQuality(
   float degrees, 
   float hPascals, 
   float percentage) {
-  int code1 = 1;
-  int code2 = 1;
-  int code3 = 1;
-  int code4 = 1;
-  int code5 = 1;
-  int code6 = 1;
 
-  if (gas <= 750 && gas >= 400) code1 = 0;
-  else code1 = 1;
+  int codes[6] = {1, 1, 1, 1, 1, 1};
 
-  if (luminosity >= 50 && luminosity <= 150) code2 = 0;
-  else code2 = 1;
+  // set to 0 if is in normal range or -1 if incorrect
+  if (gas <= 750 && gas >= 400) codes[0] = 0;
+  else if (gas < 0) codes[0] = -1;
 
-  if (decibels <= 55) code3 = 0;
-  else code3 = 1;
+  if (luminosity >= 50 && luminosity <= 150) codes[1] = 0;
+  else if (luminosity < 0) codes[1] = -1;
 
-  if (degrees >= 16 && degrees <= 22) code4 = 0;
-  else code4 = 1;
+  if (decibels > 0 && decibels <= 55) codes[2] = 0;
+  else if (decibels <= 0) codes[2] = -1;
 
-  if (hPascals >= 1000 && hPascals <= 1050) code5 = 0;
-  else code5 = 1;
+  if (degrees >= 16 && degrees <= 22) codes[3] = 0;
+  else if (degrees < 0) codes[3] = -1;
 
-  if (percentage >= 30 && percentage <= 60) code6 = 0;
-  else code6 = 1;
+  if (hPascals >= 1000 && hPascals <= 1050) codes[4] = 0;
+  else if (hPascals < 0) codes[4] = -1;
 
-  int total = code1 + code2 + code3 + code4 + code5 + code6;
+  if (percentage >= 30 && percentage <= 60) codes[5] = 0;
+  else if (percentage < 0) codes[5] = -1;
 
   Quality result;
-  result.qualityArr[0] = code1;
-  result.qualityArr[1] = code2;
-  result.qualityArr[2] = code3;
-  result.qualityArr[3] = code4;
-  result.qualityArr[4] = code5;
-  result.qualityArr[5] = code6;
 
-  switch(total) {
-    case 6:
-      result.qualityColor = Color(255, 0, 0);
-      break;
-    case 5:
-      result.qualityColor = Color(212, 42, 0);
-      break;
-    case 4:
-      result.qualityColor = Color(170, 85, 0);
-      break;
-    case 3:
-      result.qualityColor = Color(127, 127, 0);
-      break;
-    case 2:
-      result.qualityColor = Color(85, 170, 0);
-      break;
-    case 1:
-      result.qualityColor = Color(42, 212, 0);
-      break;
-    case 0:
-      result.qualityColor = Color(0, 255, 0);
-      break;
+  int total = 0;
+  int totalMax = 0;
+
+  for (int i = 0; i < 6; i++) {
+    if (codes[i] != -1) totalMax++;
+    if (codes[i] == 0) total++;
+    result.qualityArr[i] = codes[i];
   }
-  Serial.print(result.qualityColor.red);
-  Serial.print(result.qualityColor.green);
+
+  Serial.println(total);
+
+  result.qualityColor = calculateQualityColor(total, totalMax);
+
+  Serial.println(result.qualityColor.red);
+  Serial.println(result.qualityColor.green);
 
   return result;
+}
+
+// divide the spectrum in equal fragments depending on total count
+// of valid measurements
+Color calculateQualityColor(int total, int totalMax) {
+  int step = 255 / totalMax;
+  return Color(step * (totalMax - total), step * total, 0);
 }
