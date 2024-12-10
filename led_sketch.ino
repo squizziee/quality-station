@@ -23,10 +23,6 @@ Adafruit_BME280 bme2(BME_CS, BME_MOSI, BME_MISO, BME_SCK); // SPI
 #define DEBUG_PIN 4
 #define SIGNAL_PIN 8
 
-// 40x2 screen pins
-//const int rs = 2, en = 3, d4 = 4, d5 = 5, d6 = 6, d7 = 7;
-//LiquidCrystal lcd(rs, en, d4, d5, d6, d7);
-
 // delay times for loop function
 unsigned long delayTime;
 unsigned long displayDelayTime;
@@ -35,7 +31,7 @@ bool isDebug = true;
 // expected range of measurements in {min, max} format
 const int   GAS_EXPECTED[2] =         {100, 1000};
 const float LUMINOSITY_EXPECTED[2] =  {0, 500};
-const int   SOUND_EXPECTED[2] =       {25, 200};
+const int   SOUND_EXPECTED[2] =       {25, 100};
 const float TEMPERATURE_EXPECTED[2] = {5, 50};
 const float PRESSURE_EXPECTED[2] =    {950, 1100};
 const float HUMIDITY_EXPECTED[2] =    {10, 100};
@@ -48,6 +44,7 @@ const float TEMPERATURE_NORMAL[2] = {16, 22};
 const float PRESSURE_NORMAL[2] =    {1000, 1050};
 const float HUMIDITY_NORMAL[2] =    {30, 60};
 
+// integrity map in {primary, secondary} format
 int GAS_SENSORS[2] =         {0, 0};
 int LUMINOSITY_SENSORS[2] =  {0, 0};
 int SOUND_SENSORS[2] =       {0, 0};
@@ -159,19 +156,14 @@ void setup() {
   }
   
   delayTime = 1000;
-  displayDelayTime = 2000;
+  displayDelayTime = 200;
 
   pinMode(VUMETER_PIN, INPUT);
   pinMode(LDR_PIN, INPUT);
   pinMode(MQ135_PIN, INPUT);
-
   pinMode(DEBUG_PIN, INPUT);
+
   pinMode(SIGNAL_PIN, OUTPUT);
-
-  //lcd.begin(40, 2);
-  //lcd.setCursor(0, 0);
-
-  Serial.println("Started monitoring...");
 
   ssd1306_setFixedFont(ssd1306xled_font6x8);
   ssd1306_128x64_i2c_init();
@@ -179,14 +171,10 @@ void setup() {
 
   Wire.begin();
 
-  bool screenPresent = checkScreen();
+  ssd1306_printFixed(0,  0, "Initializing...", STYLE_NORMAL);
 
-  if (!screenPresent) {
-    while(true) {
-      pulseSignal();
-      screenPresent = checkScreen();
-    }
-  }
+  Serial.println("Started monitoring...");
+  checkRelays();
 }
 
 void pulseSignal() {
@@ -198,6 +186,7 @@ void pulseSignal() {
   }
 }
 
+// find out if screen is connected via I2C
 bool checkScreen() {
   Serial.println("Scanning for I2C devices...");
   byte error, address;
@@ -213,9 +202,83 @@ bool checkScreen() {
       } 
     }
   }
+  Serial.println("Error: no display found");
   return false;
 }
 
+bool inRange(int val, int min, int max) {
+  return val > min && val < max;
+}
+
+// find out if relays are connected
+bool checkRelays() {
+  Serial.println("Scanning for relays...");
+
+  pinMode(VUMETER_PIN, INPUT_PULLUP);
+  pinMode(LDR_PIN, INPUT_PULLUP);
+  pinMode(MQ135_PIN, INPUT_PULLUP);
+
+  int relay1 = analogRead(VUMETER_PIN);
+  int relay2 = analogRead(LDR_PIN);
+  int relay3 = analogRead(MQ135_PIN);
+
+  switchToSecondarySensors();
+
+  int relay1_ = analogRead(VUMETER_PIN);
+  int relay2_ = analogRead(LDR_PIN);
+  int relay3_ = analogRead(MQ135_PIN);
+
+  switchToPrimarySensors();
+
+  pinMode(VUMETER_PIN, INPUT);
+  pinMode(LDR_PIN, INPUT);
+  pinMode(MQ135_PIN, INPUT);
+
+Serial.println(relay1);
+  Serial.println(relay2);
+  Serial.println(relay3);
+  Serial.println(relay1_);
+  Serial.println(relay2_);
+  Serial.println(relay3_);
+
+  if (
+    (inRange(relay1, 0, 20) || inRange(relay1_, 0, 20)) && 
+    (inRange(relay2, 0, 1000) || inRange(relay2_, 0, 1000)) && 
+    (inRange(relay3, 0, 1000) || inRange(relay3_, 0, 1000))
+  ) {
+    if (!inRange(relay1, 0, 1000)) SOUND_SENSORS[0] = 1;
+    if (!inRange(relay1_, 0, 1000)) SOUND_SENSORS[1] = 1;
+    if (!inRange(relay2, 0, 1000)) LUMINOSITY_SENSORS[1] = 1;
+    if (!inRange(relay2_, 0, 1000)) LUMINOSITY_SENSORS[0] = 1;
+    if (!inRange(relay3, 0, 1000)) GAS_SENSORS[1] = 1;
+    if (!inRange(relay3_, 0, 1000)) GAS_SENSORS[0] = 1;
+
+    Serial.println("All relays connected");
+    return true;
+  }
+
+  Serial.println("Error: system integrity fault: ");
+  Serial.println("Either relay is disconnected or two sensors of the same type are not connected to relay.");
+  Serial.println("[System analysis]");
+  Serial.println("- VUMETER RELAY: " + String(inRange(relay1, 0, 1000) || inRange(relay1_, 0, 1000) ? "connected" : "N/A"));
+  Serial.println("- LDR RELAY: " + String(inRange(relay2, 0, 1000) || inRange(relay2_, 0, 1000) ? "connected" : "N/A"));
+  Serial.println("- MQ135 RELAY: " + String(inRange(relay3, 0, 1000) || inRange(relay3_, 0, 1000) ? "connected" : "N/A"));
+  // Serial.println(relay1);
+  // Serial.println(relay2);
+  // Serial.println(relay3);
+  // Serial.println(relay1_);
+  // Serial.println(relay2_);
+  // Serial.println(relay3_);
+
+  ssd1306_printFixed(0,  0, "Fatal error: insufficient integrity", STYLE_NORMAL);
+  ssd1306_printFixed(0,  20, (String("- VUMETER RELAY: ") + String((inRange(relay1, 0, 1000) || inRange(relay1_, 0, 1000)) ? "OK" : "N/A")).c_str(), STYLE_NORMAL);
+  ssd1306_printFixed(0,  30, (String("- LDR RELAY: ") + String((inRange(relay2, 0, 1000) || inRange(relay2_, 0, 1000)) ? "OK" : "N/A")).c_str(), STYLE_NORMAL);
+  ssd1306_printFixed(0,  35, (String("- MQ135 RELAY: ") + String((inRange(relay3, 0, 1000) || inRange(relay3_, 0, 1000)) ? "OK" : "N/A")).c_str(), STYLE_NORMAL);
+
+  return false;
+}
+
+// calculate total system integrity (13 components)
 float calculateIntegrity() {
   int intact = 13 -
     (GAS_SENSORS[0] + GAS_SENSORS[1] + LUMINOSITY_SENSORS[0] + LUMINOSITY_SENSORS[1] +
@@ -224,80 +287,7 @@ float calculateIntegrity() {
   return intact / 13.0 * 100.0;
 }
 
-void loop() {
-  bool screenPresent = checkScreen();
-  Serial.print(screenPresent);
-  if (!screenPresent) {
-    Serial.print("aboba");
-    while(1) {
-      delay(1000);
-      screenPresent = checkScreen();
-    }
-  }
-
-  SCREENS[0] = !screenPresent;
-  ssd1306_clearScreen();
-
-  isDebug = (bool) digitalRead(DEBUG_PIN); 
-  int value = analogRead(DEBUG_PIN);
-
-  Measurements calibrated = calibrateMeasurements(
-    measureGasLevel(), 
-    measureLuminosity(), 
-    measureSoundLevel(), 
-    measureTemperature(false), 
-    measurePressure(false),
-    measureHumidity(false)
-  );
-
-  Quality quality = calculateQuality(
-    calibrated.gas, 
-    calibrated.luminosity, 
-    calibrated.decibels, 
-    calibrated.degrees, 
-    calibrated.hPascals, 
-    calibrated.percentage
-  );
-
-  setColor(quality.qualityColor);
-
-  gasToLCD(calibrated.gas);
-  // // lcd.setCursor(0, 1);
-  luminosityToLCD(calibrated.luminosity);
-  // // delay(displayDelayTime);
-  // // lcd.setCursor(0, 0);
-  // // lcd.clear();
-
-  soundToLCD(calibrated.decibels);
-  // // lcd.setCursor(0, 1);
-
-  delay(displayDelayTime);
-
-  // ssd1306_clearScreen();
-
-  temperatureToLCD(calibrated.degrees);
-  // // delay(displayDelayTime);
-  // // lcd.setCursor(0, 0);
-  // // lcd.clear();
-
-  pressureToLCD(calibrated.hPascals);
-  // // lcd.setCursor(0, 1);
-  humidityToLCD(calibrated.percentage);
-  // delay(displayDelayTime - delayTime);
-  // lcd.setCursor(0, 0);
-  // lcd.clear();
-
-  delay(displayDelayTime);
-
-  ssd1306_clearScreen();
-  String row1 = "OVERALL QUALITY: " + String(quality.getOverallQuality()) + "/" + String(quality.getCountOfAllMeasurementsWithValidSensors());
-  String row2 = "LACKING: " + quality.getLackingMeasurements();
-  ssd1306_printFixed(0,  0, row1.c_str(), STYLE_NORMAL);
-  ssd1306_printFixed(0,  10, row2.c_str(), STYLE_NORMAL);
-  delay(displayDelayTime);
-
-  if (isDebug) {
-    ssd1306_clearScreen();
+void showDebug() {
     String r1 = "INTEGRITY: " + String(calculateIntegrity()) + "%";
 
     String r2_1 = "PRIMARY";
@@ -312,8 +302,10 @@ void loop() {
     String r4_3 = String((LUMINOSITY_SENSORS[1] ? "INVALID" : "VALID"));
 
     String r5_1 = "N";
-    String r5_2 = String((SOUND_SENSORS[0] ? "INVALID" : "VALID"));
-    String r5_3 = String((SOUND_SENSORS[1] ? "INVALID" : "VALID"));
+    Serial.print(SOUND_SENSORS[0]);
+    Serial.print(SOUND_SENSORS[1]);
+    String r5_2 = String((SOUND_SENSORS[1] ? "INVALID" : "VALID"));
+    String r5_3 = String((SOUND_SENSORS[0] ? "INVALID" : "VALID"));
 
     String r6_1 = "T";
     String r6_2 = String((TEMPERATURE_SENSORS[0] ? "INVALID" : "VALID"));
@@ -354,20 +346,81 @@ void loop() {
     ssd1306_printFixed(0,  60, r8_1.c_str(), STYLE_NORMAL);
     ssd1306_printFixed(10,  60, r8_2.c_str(), STYLE_NORMAL);
     ssd1306_printFixed(65,  60, r8_3.c_str(), STYLE_NORMAL);
-    delay(displayDelayTime);
+}
+
+void loop() {
+  // checks
+  bool screenPresent = checkScreen();
+  if (!screenPresent) {
+    while(1) {
+      delay(1000);
+      screenPresent = checkScreen();
+    }
   }
 
-  // lcd.print("Overall quality: ");
-  // lcd.print(quality.getOverallQuality());
-  // lcd.print("/");
-  // lcd.print(quality.getCountOfAllMeasurementsWithValidSensors());
-  // lcd.setCursor(0, 1);
-  // lcd.print("Bad: ");
-  // lcd.print(quality.getLackingMeasurements());
-  // delay(displayDelayTime);
-  // lcd.setCursor(0, 0);
+  SCREENS[0] = !screenPresent;
 
-  //delay(delayTime);
+  bool relaysConnected = checkRelays();
+  if (!relaysConnected) {
+    while(1) {
+      pulseSignal();
+      relaysConnected = checkRelays();
+    }
+    
+  }
+
+  isDebug = (bool) digitalRead(DEBUG_PIN); 
+  int value = analogRead(DEBUG_PIN);
+
+  Measurements calibrated = calibrateMeasurements(
+    measureGasLevel(), 
+    measureLuminosity(), 
+    measureSoundLevel(), 
+    measureTemperature(false), 
+    measurePressure(false),
+    measureHumidity(false)
+  );
+
+  Quality quality = calculateQuality(
+    calibrated.gas, 
+    calibrated.luminosity, 
+    calibrated.decibels, 
+    calibrated.degrees, 
+    calibrated.hPascals, 
+    calibrated.percentage
+  );
+
+  setColor(quality.qualityColor);
+
+  ssd1306_clearScreen();
+
+  gasToLCD(calibrated.gas);
+  luminosityToLCD(calibrated.luminosity);
+
+  soundToLCD(calibrated.decibels);
+
+  delay(displayDelayTime);
+  ssd1306_clearScreen();
+
+  temperatureToLCD(calibrated.degrees);
+  pressureToLCD(calibrated.hPascals);
+  humidityToLCD(calibrated.percentage);
+
+  delay(displayDelayTime);
+  ssd1306_clearScreen();
+
+  String row1 = "OVERALL QUALITY: " + String(quality.getOverallQuality()) + "/" + String(quality.getCountOfAllMeasurementsWithValidSensors());
+  String row2 = "LACKING: " + quality.getLackingMeasurements();
+  ssd1306_printFixed(0,  0, row1.c_str(), STYLE_NORMAL);
+  ssd1306_printFixed(0,  10, row2.c_str(), STYLE_NORMAL);
+
+  delay(displayDelayTime);
+
+  if (isDebug) {
+    ssd1306_clearScreen();
+    showDebug();
+    delay(displayDelayTime);
+  }
 }
 
 String compare(int val, int min, int max) {
@@ -394,21 +447,6 @@ void gasToLCD(int gas) {
   String row2 = compare(gas, GAS_NORMAL[0], GAS_NORMAL[1]) + " (" + String(GAS_NORMAL[0]) + "-" + String(GAS_NORMAL[1]) + ")";
   ssd1306_printFixed(0,  0, row1.c_str(), STYLE_NORMAL);
   ssd1306_printFixed(0,  10, row2.c_str(), STYLE_NORMAL);
-
-  // lcd.print("Gas: ");
-  // if (gas < 0) {
-  //   lcd.print("no valid sensor data");
-  //   return;
-  // }
-  // lcd.print(gas);
-  // lcd.print(" ppm (");
-  // lcd.print(compare(gas, GAS_NORMAL[0], GAS_NORMAL[1]));
-  // lcd.print(")");
-  // if (isDebug) {
-  //   lcd.print("[");
-  //   lcd.print(2 - (GAS_SENSORS[0] + GAS_SENSORS[1]));
-  //   lcd.print("/2]");
-  // }
 }
 
 void luminosityToLCD(float luminosity) {
@@ -421,21 +459,6 @@ void luminosityToLCD(float luminosity) {
   String row2 = compare(luminosity, LUMINOSITY_NORMAL[0], LUMINOSITY_NORMAL[1]) + " (" + String(LUMINOSITY_NORMAL[0]) + "-" + String(LUMINOSITY_NORMAL[1]) + ")";
   ssd1306_printFixed(0,  25, row1.c_str(), STYLE_NORMAL);
   ssd1306_printFixed(0,  35, row2.c_str(), STYLE_NORMAL);
-
-  // lcd.print("Luminosity: ");
-  // if (luminosity < 0) {
-  //   lcd.print("no valid sensor data");
-  //   return;
-  // }
-  // lcd.print(luminosity);
-  // lcd.print(" lux (");
-  // lcd.print(compareF(luminosity, LUMINOSITY_NORMAL[0], LUMINOSITY_NORMAL[1]));
-  // lcd.print(")");
-  // if (isDebug) {
-  //   lcd.print("[");
-  //   lcd.print(2 - (LUMINOSITY_SENSORS[0] + LUMINOSITY_SENSORS[1]));
-  //   lcd.print("/2]");
-  // }
 }
 
 void soundToLCD(int decibels) {
@@ -448,21 +471,6 @@ void soundToLCD(int decibels) {
   String row2 = compare(decibels, SOUND_NORMAL[0], SOUND_NORMAL[1]) + " (" + String(SOUND_NORMAL[0]) + "-" + String(SOUND_NORMAL[1]) + ")";
   ssd1306_printFixed(0,  50, row1.c_str(), STYLE_NORMAL);
   ssd1306_printFixed(0,  60, row2.c_str(), STYLE_NORMAL);
-
-  // lcd.print("Sound level: ");
-  // if (decibels < 0) {
-  //   lcd.print("no valid sensor data");
-  //   return;
-  // }
-  // lcd.print(decibels);
-  // lcd.print(" db (");
-  // lcd.print(compare(decibels, SOUND_NORMAL[0], SOUND_NORMAL[1]));
-  // lcd.print(")");
-  // if (isDebug) {
-  //   lcd.print("[");
-  //   lcd.print(2 - (SOUND_SENSORS[0] + SOUND_SENSORS[1]));
-  //   lcd.print("/2]");
-  // }
 }
 
 void temperatureToLCD(float degrees) {
@@ -475,21 +483,6 @@ void temperatureToLCD(float degrees) {
   String row2 = compare(degrees, TEMPERATURE_NORMAL[0], TEMPERATURE_NORMAL[1]) + " (" + String(TEMPERATURE_NORMAL[0]) + "-" + String(TEMPERATURE_NORMAL[1]) + ")";
   ssd1306_printFixed(0,  0, row1.c_str(), STYLE_NORMAL);
   ssd1306_printFixed(0,  10, row2.c_str(), STYLE_NORMAL);
-
-  // lcd.print("Temperature: ");
-  // if (degrees < 0) {
-  //   lcd.print("no valid sensor data");
-  //   return;
-  // }
-  // lcd.print(degrees);
-  // lcd.print(" *C (");
-  // lcd.print(compareF(degrees, TEMPERATURE_NORMAL[0], TEMPERATURE_NORMAL[1]));
-  // lcd.print(")");
-  // if (isDebug) {
-  //   lcd.print("[");
-  //   lcd.print(2 - (TEMPERATURE_SENSORS[0] + TEMPERATURE_SENSORS[1]));
-  //   lcd.print("/2]");
-  // }
 }
 
 void pressureToLCD(float hPascals) {
@@ -502,21 +495,6 @@ void pressureToLCD(float hPascals) {
   String row2 = compare(hPascals, PRESSURE_NORMAL[0], PRESSURE_NORMAL[1]) + " (" + String(PRESSURE_NORMAL[0]) + "-" + String(PRESSURE_NORMAL[1]) + ")";
   ssd1306_printFixed(0,  25, row1.c_str(), STYLE_NORMAL);
   ssd1306_printFixed(0,  35, row2.c_str(), STYLE_NORMAL);
-
-  // lcd.print("Pressure: ");
-  // if (hPascals < 0) {
-  //   lcd.print("no valid sensor data");
-  //   return;
-  // }
-  // lcd.print(hPascals);
-  // lcd.print(" hPa (");
-  // lcd.print(compareF(hPascals, PRESSURE_NORMAL[0], PRESSURE_NORMAL[1]));
-  // lcd.print(")");
-  // if (isDebug) {
-  //   lcd.print("[");
-  //   lcd.print(2 - (PRESSURE_SENSORS[0] + PRESSURE_SENSORS[1]));
-  //   lcd.print("/2]");
-  // }
 }
 
 void humidityToLCD(float percentage) {
@@ -529,21 +507,6 @@ void humidityToLCD(float percentage) {
   String row2 = compare(percentage, HUMIDITY_NORMAL[0], HUMIDITY_NORMAL[1]) + " (" + String(HUMIDITY_NORMAL[0]) + "-" + String(HUMIDITY_NORMAL[1]) + ")";
   ssd1306_printFixed(0,  50, row1.c_str(), STYLE_NORMAL);
   ssd1306_printFixed(0,  60, row2.c_str(), STYLE_NORMAL);
-
-  // lcd.print("Humidity: ");
-  //  if (percentage < 0) {
-  //   lcd.print("no valid sensor data");
-  //   return;
-  // }
-  // lcd.print(percentage);
-  // lcd.print(" % (");
-  // lcd.print(compareF(percentage, HUMIDITY_NORMAL[0], HUMIDITY_NORMAL[1]));
-  // lcd.print(")");
-  // if (isDebug) {
-  //   lcd.print("[");
-  //   lcd.print(2 - (HUMIDITY_SENSORS[0] + HUMIDITY_SENSORS[1]));
-  //   lcd.print("/2]");
-  // }
 }
 
 // measurement functions
@@ -564,6 +527,8 @@ int measureSoundLevel() {
   int analogValue = analogRead(VUMETER_PIN);
   float voltage = analogValue * (5.0 / 1023.0);
   int db = 20 * log10(voltage / 0.000092) ; 
+  Serial.print("Sound: ");
+  Serial.println(db);
   return db;
 }
 
@@ -583,13 +548,13 @@ int measureGasLevel() {
 void switchToSecondarySensors() {
   pinMode(0, OUTPUT);
   digitalWrite(0, HIGH);
-  delay(100);
+  delay(500);
 }
 
 void switchToPrimarySensors() {
   pinMode(0, OUTPUT);
   digitalWrite(0, LOW);
-  delay(100);
+  delay(500);
 }
 
 // measurement calibration function. Accepts measurements from
@@ -629,17 +594,19 @@ Measurements calibrateMeasurements(
 // measurement comparison function for int
 int assessCorrectness(int measurement1, int measurement2, int lowest, int highest, int& ref1, int& ref2) {
   int correct;
-  if (measurement1 > lowest && measurement1 < highest && measurement2 > lowest && measurement1 < highest) {
+  int ref1Copy = ref1;
+  int ref2Copy = ref2;
+  if (measurement1 > lowest && measurement1 < highest && measurement2 > lowest && measurement2 < highest && !ref1Copy && !ref2Copy) {
     correct = (measurement1 + measurement2) / 2;
     ref1 = 0;
     ref2 = 0;
   }
-  else if(measurement1 > lowest && measurement1 < highest) {
+  else if(measurement1 > lowest && measurement1 < highest && !ref1Copy) {
     correct = measurement1;
     ref2 = 1;
     ref1 = 0;
   }
-  else if(measurement2 > lowest && measurement2 < highest) {
+  else if(measurement2 > lowest && measurement2 < highest && !ref2Copy) {
     correct = measurement2;
     ref1 = 1;
     ref2 = 0;
@@ -649,26 +616,31 @@ int assessCorrectness(int measurement1, int measurement2, int lowest, int highes
     ref1 = 1;
     ref2 = 1;
   }
-  Serial.print("Refs:");
-  Serial.print(ref1);
-  Serial.println(ref2);
+  if (ref1Copy == 1) {
+    ref1 = 1;
+  }
+  if (ref2Copy == 1) {
+    ref2 = 1;
+  }
   return correct;
 }
 
 // measurement comparison function for float
 float assessCorrectnessF(float measurement1, float measurement2, float lowest, float highest, int& ref1, int& ref2) {
   float correct;
-  if (measurement1 > lowest && measurement1 < highest && measurement2 > lowest && measurement1 < highest) {
+  int ref1Copy = ref1;
+  int ref2Copy = ref2;
+  if (measurement1 > lowest && measurement1 < highest && measurement2 > lowest && measurement2 < highest && !ref1Copy && !ref2Copy) {
     correct = (measurement1 + measurement2) / 2.0;
     ref1 = 0;
     ref2 = 0;
   }
-  else if(measurement1 > lowest && measurement1 < highest) {
+  else if(measurement1 > lowest && measurement1 < highest && !ref1Copy) {
     correct = measurement1;
     ref2 = 1;
     ref1 = 0;
   }
-  else if(measurement2 > lowest && measurement2 < highest) {
+  else if(measurement2 > lowest && measurement2 < highest && !ref2Copy) {
     correct = measurement2;
     ref1 = 1;
     ref2 = 0;
@@ -678,9 +650,12 @@ float assessCorrectnessF(float measurement1, float measurement2, float lowest, f
     ref1 = 1;
     ref2= 1;
   }
-  Serial.print("Refs:");
-  Serial.print(ref1);
-  Serial.println(ref2);
+  if (ref1Copy == 1) {
+    ref1 = 1;
+  }
+  if (ref2Copy == 1) {
+    ref2 = 1;
+  }
   return correct;
 }
 
@@ -734,12 +709,7 @@ Quality calculateQuality(
     result.qualityArr[i] = codes[i];
   }
 
-  Serial.println(total);
-
   result.qualityColor = calculateQualityColor(total, totalMax);
-
-  Serial.println(result.qualityColor.red);
-  Serial.println(result.qualityColor.green);
 
   return result;
 }
